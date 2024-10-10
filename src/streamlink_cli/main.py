@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import importlib.metadata
 import logging
@@ -8,11 +10,12 @@ import signal
 import ssl
 import sys
 import warnings
+from collections.abc import Mapping
 from contextlib import closing, suppress
 from gettext import gettext
 from pathlib import Path
 from time import sleep
-from typing import Any, List, Mapping, Optional, Type, Union
+from typing import Any
 
 import streamlink.logger as logger
 from streamlink import NoPluginError, PluginError, StreamError, Streamlink, __version__ as streamlink_version
@@ -23,7 +26,7 @@ from streamlink.stream.stream import Stream, StreamIO
 from streamlink.utils.named_pipe import NamedPipe
 from streamlink.utils.times import LOCAL as LOCALTIMEZONE
 from streamlink_cli.argparser import ArgumentParser, build_parser, setup_session_options
-from streamlink_cli.compat import DeprecatedPath, stdout
+from streamlink_cli.compat import stdout
 from streamlink_cli.console import ConsoleOutput, ConsoleUserInputRequester
 from streamlink_cli.constants import CONFIG_FILES, DEFAULT_STREAM_METADATA, LOG_DIR, PLUGIN_DIRS, STREAM_SYNONYMS
 from streamlink_cli.exceptions import StreamlinkCLIError
@@ -38,7 +41,7 @@ QUIET_OPTIONS = ("json", "stream_url", "quiet")
 
 args: Any = None  # type: ignore[assignment]
 console: ConsoleOutput = None  # type: ignore[assignment]
-output: Union[FileOutput, PlayerOutput] = None  # type: ignore[assignment]
+output: FileOutput | PlayerOutput = None  # type: ignore[assignment]
 stream_fd: StreamIO = None  # type: ignore[assignment]
 streamlink: Streamlink = None  # type: ignore[assignment]
 
@@ -88,7 +91,7 @@ def check_file_output(path: Path, force: bool) -> Path:
     return realpath
 
 
-def create_output(formatter: Formatter) -> Union[FileOutput, PlayerOutput]:
+def create_output(formatter: Formatter) -> FileOutput | PlayerOutput:
     """Decides where to write the stream.
 
     Depending on arguments it can be one of these:
@@ -154,7 +157,7 @@ def create_output(formatter: Formatter) -> Union[FileOutput, PlayerOutput]:
             path=args.player,
             args=args.player_args,
             env=args.player_env,
-            quiet=not args.verbose_player,
+            quiet=not args.player_verbose,
             kill=not args.player_no_close,
             namedpipe=namedpipe,
             http=http,
@@ -170,7 +173,7 @@ def create_output(formatter: Formatter) -> Union[FileOutput, PlayerOutput]:
     )
 
 
-def create_http_server(host: Optional[str] = None, port: int = 0) -> HTTPOutput:
+def create_http_server(host: str | None = None, port: int = 0) -> HTTPOutput:
     """
     Create an HTTP server listening on a given host and port.
     If host is None, listen on all available interfaces.
@@ -208,7 +211,7 @@ def output_stream_http(
             path=args.player,
             args=args.player_args,
             env=args.player_env,
-            quiet=not args.verbose_player,
+            quiet=not args.player_verbose,
             filename=server.url,
             title=formatter.title(args.title, defaults=DEFAULT_STREAM_METADATA) if args.title else args.url,
         )
@@ -302,7 +305,7 @@ def output_stream_passthrough(stream, formatter: Formatter):
         path=args.player,
         args=args.player_args,
         env=args.player_env,
-        quiet=not args.verbose_player,
+        quiet=not args.player_verbose,
         call=True,
         filename=url,
         title=formatter.title(args.title, defaults=DEFAULT_STREAM_METADATA) if args.title else args.url,
@@ -384,13 +387,6 @@ def output_stream(stream, formatter: Formatter):
                 args.progress == "force"
                 or args.progress == "yes" and (sys.stderr.isatty() if sys.stderr else False)
             )
-            if args.force_progress:
-                show_progress = True
-                warnings.warn(
-                    "The --force-progress option has been deprecated in favor of --progress=force",
-                    StreamlinkDeprecationWarning,
-                    stacklevel=1,
-                )
             # TODO: finally clean up the global variable mess and refactor the streamlink_cli package
             # noinspection PyUnboundLocalVariable
             stream_runner = StreamRunner(stream_fd, output, show_progress=show_progress)
@@ -471,7 +467,7 @@ def fetch_streams(plugin: Plugin) -> Mapping[str, Stream]:
                           sorting_excludes=args.stream_sorting_excludes)
 
 
-def fetch_streams_with_retry(plugin: Plugin, interval: float, count: int) -> Optional[Mapping[str, Stream]]:
+def fetch_streams_with_retry(plugin: Plugin, interval: float, count: int) -> Mapping[str, Stream] | None:
     """Attempts to fetch streams repeatedly
        until some are returned or limit hit."""
 
@@ -677,24 +673,18 @@ def can_handle_url() -> int:
         return 128 + signal.SIGINT
 
 
-def load_plugins(dirs: List[Path], showwarning: bool = True):
+def load_plugins(dirs: list[Path], showwarning: bool = True):
     """Attempts to load plugins from a list of directories."""
     for directory in dirs:
         if directory.is_dir():
-            success = streamlink.plugins.load_path(directory)
-            if success and type(directory) is DeprecatedPath:
-                warnings.warn(
-                    f"Loaded plugins from deprecated path, see CLI docs for how to migrate: {directory}",
-                    StreamlinkDeprecationWarning,
-                    stacklevel=1,
-                )
+            streamlink.plugins.load_path(directory)
         elif showwarning:
             log.warning(f"Plugin path {directory} does not exist or is not a directory!")
 
 
 def setup_args(
     parser: argparse.ArgumentParser,
-    config_files: Optional[List[Path]] = None,
+    config_files: list[Path] | None = None,
     ignore_unknown: bool = False,
 ):
     """Parses arguments."""
@@ -734,12 +724,6 @@ def setup_config_args(parser, ignore_unknown=False):
     else:
         # Only load first available default config
         for config_file in filter(lambda path: path.is_file(), CONFIG_FILES):  # pragma: no branch
-            if type(config_file) is DeprecatedPath:
-                warnings.warn(
-                    f"Loaded config from deprecated path, see CLI docs for how to migrate: {config_file}",
-                    StreamlinkDeprecationWarning,
-                    stacklevel=1,
-                )
             config_files.append(config_file)
             break
 
@@ -751,12 +735,6 @@ def setup_config_args(parser, ignore_unknown=False):
                 config_file = config_file.with_name(f"{config_file.name}.{pluginname}")
                 if not config_file.is_file():
                     continue
-                if type(config_file) is DeprecatedPath:
-                    warnings.warn(
-                        f"Loaded plugin config from deprecated path, see CLI docs for how to migrate: {config_file}",
-                        StreamlinkDeprecationWarning,
-                        stacklevel=1,
-                    )
                 config_files.append(config_file)
                 break
 
@@ -797,7 +775,7 @@ def setup_plugin_args(session: Streamlink, parser: ArgumentParser):
             group.add_argument(parg.argument_name(pname), **parg.options)
 
 
-def setup_plugin_options(pluginname: str, pluginclass: Type[Plugin]) -> Options:
+def setup_plugin_options(pluginname: str, pluginclass: type[Plugin]) -> Options:
     """Initializes plugin options from argument values."""
 
     if not pluginclass.arguments:
@@ -908,9 +886,9 @@ def log_current_arguments(session: Streamlink, parser: argparse.ArgumentParser):
 def setup_logger_and_console(
     stream=sys.stdout,
     level: str = "info",
-    fmt: Optional[str] = None,
-    datefmt: Optional[str] = None,
-    file: Optional[str] = None,
+    fmt: str | None = None,
+    datefmt: str | None = None,
+    file: str | None = None,
     json=False,
 ):
     global console
