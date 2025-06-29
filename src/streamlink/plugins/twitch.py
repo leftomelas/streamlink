@@ -35,7 +35,7 @@ from requests.exceptions import HTTPError
 from streamlink.exceptions import NoStreamsError, PluginError
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
-from streamlink.session import Streamlink
+from streamlink.session import Streamlink, http_useragents
 from streamlink.stream.hls import (
     M3U8,
     DateRange,
@@ -236,7 +236,7 @@ class TwitchHLSStreamReader(HLSStreamReader):
     writer: TwitchHLSStreamWriter
     stream: TwitchHLSStream
 
-    def __init__(self, stream: TwitchHLSStream):
+    def __init__(self, stream: TwitchHLSStream, **kwargs):
         if stream.disable_ads:
             log.info("Will skip ad segments")
         if stream.low_latency:
@@ -244,7 +244,8 @@ class TwitchHLSStreamReader(HLSStreamReader):
             stream.session.options.set("hls-live-edge", live_edge)
             stream.session.options.set("hls-segment-stream-data", True)
             log.info(f"Low latency streaming (HLS live edge: {live_edge})")
-        super().__init__(stream)
+
+        super().__init__(stream, **kwargs)
 
 
 class TwitchHLSStream(HLSStream):
@@ -509,7 +510,10 @@ class TwitchAPI:
             validate.union_get("signature", "value"),
         )
 
-        headers = {}
+        headers = {
+            # https://github.com/streamlink/streamlink/issues/6574
+            "User-Agent": http_useragents.DEFAULT,
+        }
         if client_integrity:
             headers["Device-Id"], headers["Client-Integrity"] = client_integrity
 
@@ -559,35 +563,38 @@ class TwitchAPI:
             schema=validate.all(
                 {
                     "data": {
-                        "clip": {
-                            "playbackAccessToken": {
-                                "signature": str,
-                                "value": str,
-                            },
-                            "videoQualities": [
-                                validate.all(
-                                    {
-                                        "frameRate": validate.transform(int),
-                                        "quality": str,
-                                        "sourceURL": validate.url(),
-                                    },
-                                    validate.transform(
-                                        lambda q: (
-                                            f"{q['quality']}p{q['frameRate']}",
-                                            q["sourceURL"],
+                        "clip": validate.none_or_all(
+                            {
+                                "playbackAccessToken": {
+                                    "signature": str,
+                                    "value": str,
+                                },
+                                "videoQualities": validate.all(
+                                    [
+                                        {
+                                            "frameRate": validate.transform(int),
+                                            "quality": str,
+                                            "sourceURL": validate.any("", validate.url()),
+                                        },
+                                    ],
+                                    validate.filter(lambda clip: clip["sourceURL"]),
+                                    validate.map(
+                                        lambda clip: (
+                                            f"{clip['quality']}p{clip['frameRate']}",
+                                            clip["sourceURL"],
                                         ),
                                     ),
                                 ),
-                            ],
-                        },
+                            },
+                            validate.union_get(
+                                ("playbackAccessToken", "signature"),
+                                ("playbackAccessToken", "value"),
+                                "videoQualities",
+                            ),
+                        ),
                     },
                 },
                 validate.get(("data", "clip")),
-                validate.union_get(
-                    ("playbackAccessToken", "signature"),
-                    ("playbackAccessToken", "value"),
-                    "videoQualities",
-                ),
             ),
         )
 
@@ -969,11 +976,10 @@ class Twitch(Plugin):
         return streams
 
     def _get_clips(self):
-        try:
-            sig, token, streams = self.api.clips(self.clip_id)
-        except (PluginError, TypeError):
+        data = self.api.clips(self.clip_id)
+        if not data:
             return
-
+        sig, token, streams = data
         for quality, stream in streams:
             yield quality, HTTPStream(self.session, update_qsd(stream, {"sig": sig, "token": token}))
 
