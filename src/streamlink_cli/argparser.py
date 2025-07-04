@@ -357,7 +357,7 @@ def build_parser():
 
             For verbose levels (`trace` and `all`):
 
-            Default is "[{asctime}][{name}][{levelname}] {message}".
+            Default is "[{asctime}][{threadName}][{name}][{levelname}] {message}".
 
             Otherwise:
 
@@ -737,6 +737,7 @@ def build_parser():
     )
     output.add_argument(
         "--fs-safe-rules",
+        metavar="{POSIX,Windows}",
         choices=["POSIX", "Windows"],
         type=str,
         help="""
